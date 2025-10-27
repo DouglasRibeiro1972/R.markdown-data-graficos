@@ -1,0 +1,262 @@
+---
+# title: "Relatório de Análises"
+# date: "`r format(Sys.time(), '%d/%m/%Y %H:%M')`"
+output:
+  html_document:
+    toc: false
+    theme: readable
+---
+  
+```{r setup, include=FALSE, warning=FALSE}
+# Configuração do R Markdown: não mostrar o código R no output (REMOVER O ECHO=TRUE)
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
+
+# --- Configuração do Setup e Carregamento de Dados ---
+library(tidyverse)
+library(knitr)
+library(kableExtra)
+library(patchwork)
+library(glue)
+library(openxlsx)
+library(readxl)
+library(dplyr)
+library(lubridate)
+# Define o tema visual do ggplot2
+theme_set(theme_minimal())
+
+caminho <- "C:/Users/douglas.ribeiro/Downloads/Série Histórica.xlsx"
+
+df <- read_xlsx(caminho) %>% 
+  select(
+    -tail(names(.), 8) # Esta é a forma mais robusta e explícita
+  ) %>% 
+  tidyr::pivot_longer(cols = 11:27, names_to = "Mes", values_to = "Preco_Unitario") %>% 
+  subset(ITEM == "M0003") %>% 
+  select(UF, Região, Mes, Preco_Unitario) %>% 
+  subset(!(UF %in% c("AMP", "MÁX", "MÍN", "MÉD"))) %>% 
+  rename(Regiao = Região) %>% 
+  mutate(Regiao = ifelse(Regiao == "N", "NORTE", 
+                         ifelse(Regiao == "NE", "NORDESTE", 
+                                ifelse(Regiao == "S", "SUDESTE E SUL", 
+                                       ifelse(Regiao == "SE", "SUDESTE E SUL", 
+                                              ifelse(Regiao == "CO", "CENTRO OESTE", "")))))) %>% 
+   mutate(
+      # 1. Converte a string (abr-22) para objeto 'Date' (2022-04-01)
+      Mes = as.Date(paste0("01-", Mes), format = "%d-%b-%y", tryFormats = c("%d-%b-%y"))
+   )
+
+ref_meses <- df %>% 
+  select(Mes) %>% 
+  unique() %>% 
+  arrange(desc(Mes)) %>% 
+  head(10)
+
+df <- df %>% 
+  subset(Mes %in% ref_meses$Mes)
+
+
+# 4. Cálculo da Variação Percentual (Var%) para a Legenda
+df_final <- df %>%
+  group_by(UF) %>%
+  mutate(
+    Preco_Inicial = Preco_Unitario[Mes == min(Mes)],
+    Preco_Final = Preco_Unitario[Mes == max(Mes)],
+    Var_Percentual = ((Preco_Final - Preco_Inicial) / Preco_Inicial) * 100
+  ) %>%
+  ungroup() %>%
+  mutate(
+    Rotulo_Legenda = paste0(
+      UF, "       |       ", 
+      format(Var_Percentual, digits = 1, decimal.mark = ","), "%"
+    )
+  )
+```
+
+
+```{r grafico_split_patchwork, fig.height=12, fig.width=10}
+# 1. Definir o tema customizado para os 4 subplots
+tema_facet_split <- theme_minimal(base_size = 12) +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 14, face = "bold"),
+    legend.position = "right", # Legenda à direita em CADA subplot
+    legend.text = element_text(size = 7),
+    legend.title = element_text(size = 9, face = "bold"),
+    plot.margin = margin(5, 5, 5, 5, "pt"),
+    axis.title.y = element_text(angle = 90, size = 10),
+    axis.title.x = element_blank(),
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+# 2. Função de Plotagem para um único subgráfico (com título da região)
+plot_regiao <- function(data, titulo) {
+  
+  ggplot(data, aes(x = Mes, y = Preco_Unitario, color = Rotulo_Legenda, linetype = Rotulo_Legenda, shape = Rotulo_Legenda)) +
+    geom_line(linewidth = 1) +
+    geom_point(size = 2) +
+    labs(title = NULL,
+         y = glue("{titulo}\n\nPreço Unitário (R$/un.)"),
+         color = "Legenda: UF - Var.%") + # Título da legenda que VOCÊ quer
+
+    scale_x_date(date_breaks = "3 month", date_labels = "%b-%y") +
+    scale_y_continuous(expand = expansion(mult = c(0.25, 0.25))) +
+ 
+    # 3. ESCALA DE TIPO DE LINHA (OCULTA A LEGENDA, MAS MANTÉM A LINHA NO GRÁFICO)
+    scale_linetype_manual(
+      values = rep(c("solid", "dashed", "dotted", "dotdash", "longdash", "twodash"), length.out = length(unique(data$Rotulo_Legenda))),
+      guide = "none" # <--- Oculta a legenda, mas mantém o linetype no gráfico
+    ) +
+    
+    # 4. ESCALA DE FORMATO DO PONTO (OCULTA A LEGENDA, MAS MANTÉM O PONTO NO GRÁFICO)
+    scale_shape_manual(
+      values = rep(c(16, 17, 15, 18, 8, 4, 3, 7), length.out = length(unique(data$Rotulo_Legenda))), 
+      guide = "none" # <--- Oculta a legenda, mas mantém o shape no gráfico
+    ) +
+    
+    # 5. ESCALA DE COR (A ÚNICA QUE SOBREVIVE PARA A LEGENDA)
+    # Não precisamos de scale_color_manual se as cores padrão são suficientes, mas se você usou cores específicas antes, 
+    # é melhor manter a chamada. Se não, esta linha é opcional, mas garante que o 'color' seja o mestre da legenda:
+    guides(
+      color = guide_legend(override.aes = list(shape = rep(c(16, 17, 15, 18, 8, 4, 3, 7), length.out = length(unique(data$Rotulo_Legenda))), # Adiciona os shapes na legenda de cor
+                                               linetype = rep(c("solid", "dashed", "dotted", "dotdash", "longdash", "twodash"), length.out = length(unique(data$Rotulo_Legenda))))) # Adiciona o linetype na legenda de cor
+    ) +
+    
+    tema_facet_split
+}
+
+
+# 3. Gerar os 4 plots individuais (usando o dataframe df_final)
+df_norte <- df_final %>% filter(Regiao == "NORTE")
+df_nordeste <- df_final %>% filter(Regiao == "NORDESTE")
+df_sudestesul <- df_final %>% filter(Regiao == "SUDESTE E SUL")
+df_centrooeste <- df_final %>% filter(Regiao == "CENTRO OESTE")
+
+p1 <- plot_regiao(df_norte, "NORTE")
+p2 <- plot_regiao(df_nordeste, "NORDESTE")
+p3 <- plot_regiao(df_sudestesul, "SUDESTE E SUL")
+p4 <- plot_regiao(df_centrooeste, "CENTRO OESTE")
+
+
+# 4. Combinação dos plots na vertical (/) usando patchwork
+# Adiciona um título geral para a seção
+(p1 / p2 / p3 / p4) +
+  plot_annotation(
+   # title = '2. Análise Regional Detalhada (Gráfico Separado por Região)'
+  ) & theme(plot.title = element_text(size = 16, hjust = 0.5, face = "bold"))
+```
+
+```{r agregado_plot, fig.height=3, fig.width=10}
+# 1. Calcular Max, Média e Mínimo Global por Mês
+df_agregado <- df %>%
+  group_by(Mes) %>%
+  summarise(
+    MAX = max(Preco_Unitario, na.rm = TRUE),
+    MED = mean(Preco_Unitario, na.rm = TRUE),
+    MIN = min(Preco_Unitario, na.rm = TRUE)
+  ) %>%
+  # 2. Pivotar para o formato 'longo' (para o gráfico)
+  pivot_longer(
+    cols = c(MAX, MED, MIN),
+    names_to = "Metrica",
+    values_to = "Preco"
+  ) %>%
+  # NOVO: Calcular a Variação Percentual (Acumulada) para cada Métrica
+  group_by(Metrica) %>%
+  mutate(
+    Preco_Inicial_Metrica = Preco[Mes == min(Mes)],
+    Preco_Final_Metrica = Preco[Mes == max(Mes)],
+    Var_Percentual_Metrica = ((Preco_Final_Metrica - Preco_Inicial_Metrica) / Preco_Inicial_Metrica) * 100
+  ) %>%
+  ungroup() %>%
+  # NOVO: Criar o Rotulo_Legenda com a variação percentual
+  mutate(
+    Rotulo_Legenda_Metrica = paste0(
+      Metrica, "   |   Acum.: ",
+      format(Var_Percentual_Metrica, digits = 1, decimal.mark = ","), "%"
+    )
+  )
+
+
+# 3. Gerar o Gráfico de Linhas Agregado
+ggplot(df_agregado, aes(x = Mes, y = Preco, color = Metrica, linetype = Metrica, shape = Metrica)) + 
+  geom_line(linewidth = 1.2) +
+  geom_point(size = 3) +
+  labs(
+    y = "Preço Unitário (R$/un.)",
+    x = "Mês",
+    color = "Legenda: UF e Var.%", #"
+    ) +
+  scale_x_date(date_breaks = "3 month", date_labels = "%b-%y") +
+  scale_y_continuous(expand = expansion(mult = c(0.5, 0.5))) +
+  # Mapeamento de cores e rótulos robusto:
+  # 1. Define as cores pelas Metricas originais (MAX, MED, MIN)
+  # 2. Define os rótulos da legenda usando os Rotulos_Legenda_Metrica com a variação
+  scale_color_manual(
+    values = c("MAX" = "red", "MED" = "darkgreen", "MIN" = "blue"),
+    labels = setNames(
+        unique(df_agregado$Rotulo_Legenda_Metrica), # Texto a ser exibido (com Var.%)
+        unique(df_agregado$Rotulo_Legenda_Metrica) # Metrica que define a cor (MAX, MED, MIN)
+    )
+  ) +
+  # NOVOS: Definir tipos de linha e formatos de ponto
+  scale_linetype_manual(
+    values = c("MAX" = "solid", "MED" = "dashed", "MIN" = "dotted"), # Exemplo: linha contínua, tracejada, pontilhada
+    labels = setNames(
+        unique(df_agregado$Rotulo_Legenda_Metrica),
+        unique(df_agregado$Metrica)
+    ),
+    guide = "none"
+  ) +
+  scale_shape_manual(
+    values = c("MAX" = 16, "MED" = 17, "MIN" = 15), # Exemplo: círculo, triângulo, quadrado
+    labels = setNames(
+        unique(df_agregado$Rotulo_Legenda_Metrica),
+        unique(df_agregado$Metrica)
+    ),
+    guide = "none"
+  ) +
+  theme(legend.position = "right", 
+        legend.text = element_text(size = 8),
+        axis.text.x = element_text(angle = 45, hjust = 1))
+
+# ------------------------------------------------------------------
+# CÁLCULO E EXIBIÇÃO DA TABELA MÊS A MÊS (FINAL LIMPA para PDF/WORD)
+# ------------------------------------------------------------------
+
+# 4. Transpor o df_agregado para que o Mês seja a COLUNA (selecionando as colunas de Metrica e Preco)
+df_tabela_final_limpa <- df_agregado %>%
+  select(Mes, Metrica, Preco) %>%
+  pivot_wider(
+    names_from = Mes,
+    values_from = Preco
+  ) %>%
+  rename(Legenda = Metrica) %>%
+  # Formata os valores numéricos para 2 casas decimais
+  mutate(across(starts_with("20"), ~ format(round(., 2), nsmall = 2))) %>%
+  # Renomear as colunas de data
+  rename_with(~ format(as.Date(.), "%b-%y"), starts_with("20"))
+
+
+# 5. RENDERIZAÇÃO DA TABELA COM FORMATO LIMPO
+df_tabela_final_limpa %>%
+  kable(caption = "Tabela de Resumo: Preço Unitário Mês a Mês",
+        align = "c") %>%
+  kable_styling(
+    bootstrap_options = c("striped", "hover", "condensed"),
+    full_width = TRUE,
+    font_size = 10
+  )
+
+
+# ------------------------------------------------------------------
+# PARTE DA SOLUÇÃO ROBUSTA PARA PDF: MODO PAISAGEM (LANDSCAPE)
+# ------------------------------------------------------------------
+# Este chunk insere o comando LaTeX para mudar para modo paisagem antes da tabela.
+# Ele será ignorado ao gerar o WORD.
+
+# ATENÇÃO: Se for a primeira vez usando, veja o passo 2 e 3 abaixo!
+#{r landscape_start, results='asis', echo=FALSE}
+#cat("\\begin{landscape}")
+
+
+
+
